@@ -1,0 +1,95 @@
+-- dev_seed.sql - Datos mínimos de prueba (local)
+BEGIN;
+
+-- Contrato
+INSERT INTO contrato (contrato_id, nombre, descripcion)
+VALUES ('11111111-1111-1111-1111-111111111111', 'Contrato Demo', 'Contrato de prueba')
+ON CONFLICT DO NOTHING;
+
+-- Familias
+INSERT INTO familia (familia_id, item, nombre)
+VALUES 
+ ('22222222-2222-2222-2222-222222222221', 'F1', 'Obras Civiles'),
+ ('22222222-2222-2222-2222-222222222222', 'F2', 'Montaje')
+ON CONFLICT DO NOTHING;
+
+-- Subfamilias
+INSERT INTO subfamilia (subfamilia_id, familia_id, item, nombre)
+VALUES
+ ('33333333-3333-3333-3333-333333333331', '22222222-2222-2222-2222-222222222221', 'SF1', 'Hormigón'),
+ ('33333333-3333-3333-3333-333333333332', '22222222-2222-2222-2222-222222222222', 'SF2', 'Estructuras')
+ON CONFLICT DO NOTHING;
+
+-- Grupos
+INSERT INTO grupo (grupo_id, subfamilia_id, item, nombre)
+VALUES
+ ('44444444-4444-4444-4444-444444444441', '33333333-3333-3333-3333-333333333331', 'G1', 'Fundaciones'),
+ ('44444444-4444-4444-4444-444444444442', '33333333-3333-3333-3333-333333333332', 'G2', 'Piping')
+ON CONFLICT DO NOTHING;
+
+-- Unidades
+INSERT INTO unidad (unidad_id, nombre)
+VALUES
+ ('55555555-5555-5555-5555-555555555551', 'm3'),
+ ('55555555-5555-5555-5555-555555555552', 'kg')
+ON CONFLICT DO NOTHING;
+
+-- Partidas base
+INSERT INTO partida (
+  partida_id, contrato_id, item, descripcion,
+  familia_id, subfamilia_id, grupo_id,
+  cantidad, unidad_id, precio_unitario, vigente
+) VALUES
+ (
+  '66666666-6666-6666-6666-666666666661',
+  '11111111-1111-1111-1111-111111111111',
+  '1.01',
+  'Hormigón fundaciones',
+  '22222222-2222-2222-2222-222222222221',
+  '33333333-3333-3333-3333-333333333331',
+  '44444444-4444-4444-4444-444444444441',
+  100,
+  '55555555-5555-5555-5555-555555555551',
+  50,
+  TRUE
+ ),
+ (
+  '66666666-6666-6666-6666-666666666662',
+  '11111111-1111-1111-1111-111111111111',
+  '2.01',
+  'Montaje piping',
+  '22222222-2222-2222-2222-222222222222',
+  '33333333-3333-3333-3333-333333333332',
+  '44444444-4444-4444-4444-444444444442',
+  200,
+  '55555555-5555-5555-5555-555555555552',
+  10,
+  TRUE
+ )
+ON CONFLICT DO NOTHING;
+
+-- NOC
+INSERT INTO noc (noc_id, contrato_id, numero, motivo, fecha)
+VALUES (
+  '77777777-7777-7777-7777-777777777777',
+  '11111111-1111-1111-1111-111111111111',
+  'NOC-001',
+  'Aumento de alcance',
+  CURRENT_DATE
+)
+ON CONFLICT DO NOTHING;
+
+-- NOC línea (modifica partida 1)
+INSERT INTO noc_linea (
+  noc_linea_id, noc_id, partida_origen_id, nueva_cantidad, observacion
+)
+VALUES (
+  '88888888-8888-8888-8888-888888888888',
+  '77777777-7777-7777-7777-777777777777',
+  '66666666-6666-6666-6666-666666666661',
+  120,
+  'Incremento de volumen'
+)
+ON CONFLICT DO NOTHING;
+
+COMMIT;
