@@ -1,9 +1,11 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import LogoutButton from "@/components/LogoutButton";
+import Link from "next/link";
 
 export default async function HomePage() {
   const session = await getServerSession(authOptions);
+  const role = (session?.user as any)?.role;
 
   return (
     <div style={{ maxWidth: 900, margin: "40px auto", padding: 16 }}>
@@ -19,7 +21,15 @@ export default async function HomePage() {
           <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>
             Dashboard (MVP)
           </h1>
-          <p style={{ marginTop: 8, opacity: 0.8 }}>Control de Costos Contrato</p>
+          <p style={{ marginTop: 8, opacity: 0.8 }}>
+            Control de Costos Contrato
+          </p>
+
+          {role === "admin" && (
+            <p style={{ marginTop: 8 }}>
+              <Link href="/admin/users">Administración → Usuarios</Link>
+            </p>
+          )}
         </div>
         <LogoutButton />
       </div>
@@ -38,7 +48,7 @@ export default async function HomePage() {
   {
     email: session?.user?.email,
     name: session?.user?.name,
-    role: (session?.user as any)?.role,
+    role,
   },
   null,
   2
