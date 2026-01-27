@@ -28,6 +28,8 @@ export default async function HomePage() {
           {role === "admin" && (
             <p style={{ marginTop: 8 }}>
               <Link href="/admin/users">Administración → Usuarios</Link>
+              {" · "}
+              <Link href="/admin/partidas">Administración → Partidas base</Link>
             </p>
           )}
         </div>
