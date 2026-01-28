@@ -21,15 +21,15 @@ async function getUsuarioColumnMap() {
 
   const idCol = cols.has("usuario_id") ? "usuario_id" : cols.has("id") ? "id" : null;
   const emailCol = cols.has("email") ? "email" : null;
-  const nameCol = cols.has("nombre") ? "nombre" : cols.has("name") ? "name" : null;
-  const activeCol = cols.has("activo") ? "activo" : cols.has("active") ? "active" : null;
-  const roleCol = cols.has("rol") ? "rol" : cols.has("role") ? "role" : null;
+  const nombreCol = cols.has("nombre") ? "nombre" : cols.has("name") ? "name" : null;
+  const activoCol = cols.has("activo") ? "activo" : cols.has("active") ? "active" : null;
+  const rolCol = cols.has("rol") ? "rol" : cols.has("role") ? "role" : null;
 
   if (!idCol || !emailCol) {
     throw new Error("public.usuario: columnas requeridas no encontradas");
   }
 
-  return { idCol, emailCol, nameCol, activeCol, roleCol };
+  return { idCol, emailCol, nombreCol, activoCol, rolCol };
 }
 
 export async function GET() {
@@ -41,15 +41,14 @@ export async function GET() {
   const selectParts: string[] = [];
   selectParts.push(`${map.idCol} AS usuario_id`);
   selectParts.push(`${map.emailCol} AS email`);
-  if (map.nameCol) selectParts.push(`${map.nameCol} AS name`);
-  if (map.roleCol) selectParts.push(`${map.roleCol} AS role`);
-  if (map.activeCol) selectParts.push(`${map.activeCol} AS active`);
+  if (map.nombreCol) selectParts.push(`${map.nombreCol} AS nombre`);
+  if (map.rolCol) selectParts.push(`${map.rolCol} AS rol`);
+  if (map.activoCol) selectParts.push(`${map.activoCol} AS activo`);
 
-  const where = map.activeCol ? `WHERE ${map.activeCol} = true` : "";
   const order = `ORDER BY ${map.emailCol} ASC`;
 
   const { rows } = await pool.query(
-    `SELECT ${selectParts.join(", ")} FROM public.usuario ${where} ${order}`
+    `SELECT ${selectParts.join(", ")} FROM public.usuario ${order}`
   );
 
   return NextResponse.json({ users: rows });

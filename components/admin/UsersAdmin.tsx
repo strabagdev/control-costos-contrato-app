@@ -125,8 +125,6 @@ const styles = {
   } as const,
   td: { padding: 10, borderBottom: "1px solid #f3f4f6", verticalAlign: "top" } as const,
   rowActions: { display: "flex", gap: 8, flexWrap: "wrap" } as const,
-
-  // modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -150,6 +148,17 @@ const styles = {
   modalSub: { marginTop: 6, opacity: 0.75, fontSize: 12 } as const,
   modalFooter: { marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10 } as const,
 };
+
+function normalizeUser(u: any): UserRow {
+  return {
+    usuario_id: u.usuario_id ?? u.id,
+    email: u.email,
+    nombre: u.nombre ?? u.name ?? null, // 👈 soporta ambos
+    rol: u.rol,
+    activo: Boolean(u.activo),
+    created_at: u.created_at ?? "",
+  };
+}
 
 export default function UsersAdmin() {
   const [rows, setRows] = useState<UserRow[]>([]);
@@ -178,7 +187,9 @@ export default function UsersAdmin() {
       const res = await fetch("/api/users", { cache: "no-store" });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      setRows(data.users);
+
+      const list = Array.isArray(data) ? data : data.users ?? [];
+      setRows(list.map(normalizeUser));
     } catch (e: any) {
       setError(e?.message ?? "Error cargando usuarios");
     } finally {
@@ -226,6 +237,12 @@ export default function UsersAdmin() {
     patch: Partial<Pick<UserRow, "email" | "nombre" | "rol" | "activo">>
   ) {
     setError(null);
+
+    // ✅ Optimistic: actualiza UI de inmediato
+    setRows((curr) =>
+      curr.map((u) => (u.usuario_id === usuario_id ? { ...u, ...patch } : u))
+    );
+
     try {
       const res = await fetch(`/api/users/${usuario_id}`, {
         method: "PUT",
@@ -233,9 +250,21 @@ export default function UsersAdmin() {
         body: JSON.stringify(patch),
       });
       if (!res.ok) throw new Error(await res.text());
-      await load();
+
+      // ✅ Tu PUT devuelve { user: rows[0] }
+      const data = await res.json().catch(() => null);
+      const updated = data?.user ? normalizeUser(data.user) : null;
+
+      if (updated) {
+        setRows((curr) =>
+          curr.map((u) => (u.usuario_id === usuario_id ? { ...u, ...updated } : u))
+        );
+      }
+
       flashOk("Usuario actualizado.");
     } catch (e: any) {
+      // si falla, recargamos desde backend para volver al estado real
+      await load();
       setError(e?.message ?? "Error actualizando usuario");
     }
   }
