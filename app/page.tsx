@@ -248,6 +248,35 @@ export default async function HomePage({
             {selectedContratoId ? fmtInt(kpis.noc_count) : "—"}
           </div>
         </div>
+
+      </div>
+
+      {/* Accesos rápidos */}
+      <div
+        style={{
+          marginTop: 16,
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gap: 12,
+        }}
+      >
+        <Link
+          href={selectedContratoId ? `/admin/nocs?contrato=${selectedContratoId}` : "/admin/docs"}
+          style={{
+            padding: 16,
+            border: "1px solid #ddd",
+            borderRadius: 10,
+            textDecoration: "none",
+            color: "inherit",
+            background: "white",
+          }}
+        >
+          <div style={{ fontSize: 14, opacity: 0.7 }}>Gestión</div>
+          <div style={{ fontSize: 18, fontWeight: 900, marginTop: 4 }}>NOC</div>
+          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+            Crear, editar y aplicar Notas de Cambio
+          </div>
+        </Link>
       </div>
 
       <p style={{ marginTop: 16, opacity: 0.7, fontSize: 12 }}>
