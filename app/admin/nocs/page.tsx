@@ -171,7 +171,7 @@ export default async function AdminNocsPage({
             Contrato seleccionado: <b>{selectedContratoName}</b>
           </p>
           <p style={{ marginTop: 8 }}>
-            <Link href="/">← Volver al dashboard</Link>
+            <Link href={`/?contrato=${selectedContratoId}`}>← Volver al dashboard</Link>
           </p>
         </div>
 
