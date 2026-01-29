@@ -1,9 +1,9 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import LogoutButton from "@/components/LogoutButton";
 import Link from "next/link";
 import { pool } from "@/lib/db";
 import ContratoSelectorClient from "@/components/ContratoSelectorClient";
+import SessionLogger from "@/components/layout/SessionLogger";
 
 type SearchParams = { [key: string]: string | string[] | undefined };
 type ColInfo = { column_name: string };
@@ -141,6 +141,14 @@ export default async function HomePage({
 
   return (
     <div style={{ maxWidth: 900, margin: "40px auto", padding: 16 }}>
+      <SessionLogger
+        data={{
+          email: session?.user?.email,
+          name: session?.user?.name,
+          role,
+          contrato: selectedContratoName || null,
+        }}
+      />
       <div
         style={{
           display: "flex",
@@ -167,7 +175,7 @@ export default async function HomePage({
             </p>
           )}
         </div>
-        <LogoutButton />
+
       </div>
 
       {contratos.length === 0 ? (
@@ -192,29 +200,6 @@ export default async function HomePage({
           Contrato: <b>{selectedContratoName}</b>
         </div>
       )}
-
-      <div
-        style={{
-          marginTop: 24,
-          padding: 16,
-          border: "1px solid #ddd",
-          borderRadius: 10,
-        }}
-      >
-        <h2 style={{ fontSize: 16, marginTop: 0 }}>Sesión</h2>
-        <pre style={{ margin: 0 }}>
-{JSON.stringify(
-  {
-    email: session?.user?.email,
-    name: session?.user?.name,
-    role,
-    contrato: selectedContratoName || null,
-  },
-  null,
-  2
-)}
-        </pre>
-      </div>
 
       <div
         style={{
