@@ -5,34 +5,6 @@ import { authOptions } from "@/lib/auth";
 
 type ColInfo = { column_name: string };
 
-/**
- * Next.js (App Router) params helper
- * - In newer Next versions, ctx.params can be a Promise.
- * - Also, the dynamic segment name may not be [id] (e.g. [noc_id]).
- * This helper safely extracts the noc id from any of those cases.
- */
-async function getRouteId(ctx: any): Promise<string> {
-  const rawParams = ctx?.params;
-  const params = rawParams && typeof rawParams.then === "function" ? await rawParams : rawParams;
-
-  const direct =
-    params?.id ??
-    params?.noc_id ??
-    params?.nocId ??
-    params?.nocID ??
-    params?.noc;
-
-  if (direct) return String(direct);
-
-  // Fallback: if there is exactly 1 param key, use its value
-  if (params && typeof params === "object") {
-    const keys = Object.keys(params);
-    if (keys.length === 1) return String((params as any)[keys[0]]);
-  }
-
-  return "";
-}
-
 async function getUsuarioColumnMap() {
   const { rows } = await pool.query<ColInfo>(
     `SELECT column_name
@@ -90,7 +62,7 @@ async function assertContractAccess(usuario_id: string, contrato_id: string) {
 
 async function getNocOr404(noc_id: string) {
   const res = await pool.query(
-    `SELECT noc_id, contrato_id, numero, motivo, fecha, created_at
+    `SELECT noc_id, contrato_id, numero, motivo, fecha, status, is_dirty, applied_at, applied_by, created_at
      FROM public.noc
      WHERE noc_id = $1`,
     [noc_id]
@@ -115,7 +87,7 @@ export async function GET(_req: Request, ctx: any) {
   const usuario_id = await resolveUsuarioId(session);
   if (!usuario_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
-  const noc_id = await getRouteId(ctx);
+  const noc_id = (ctx?.params?.id ?? "").toString();
   if (!noc_id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
   const noc = await getNocOr404(noc_id);
@@ -129,7 +101,7 @@ export async function GET(_req: Request, ctx: any) {
 
 /**
  * PUT /api/nocs/[id]
- * Actualiza el header del NOC (update parcial).
+ * Actualiza el header del NOC.
  *
  * Body (parcial):
  * {
@@ -148,7 +120,7 @@ export async function PUT(req: Request, ctx: any) {
   const usuario_id = await resolveUsuarioId(session);
   if (!usuario_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
-  const noc_id = await getRouteId(ctx);
+  const noc_id = (ctx?.params?.id ?? "").toString();
   if (!noc_id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
   const current = await getNocOr404(noc_id);
@@ -186,9 +158,10 @@ export async function PUT(req: Request, ctx: any) {
     `UPDATE public.noc
      SET numero = COALESCE($2, numero),
          motivo = COALESCE($3, motivo),
-         fecha  = CASE WHEN $4::boolean THEN $5::date ELSE fecha END
+         fecha  = CASE WHEN $4::boolean THEN $5::date ELSE fecha END,
+         is_dirty = CASE WHEN status = 'applied' THEN true ELSE is_dirty END
      WHERE noc_id = $1
-     RETURNING noc_id, contrato_id, numero, motivo, fecha, created_at`,
+     RETURNING noc_id, contrato_id, numero, motivo, fecha, status, is_dirty, applied_at, applied_by, created_at`,
     [noc_id, numero, motivo, hasFechaKey, hasFechaKey ? fechaVal : null]
   );
 
@@ -197,7 +170,9 @@ export async function PUT(req: Request, ctx: any) {
 
 /**
  * DELETE /api/nocs/[id]
- * Elimina un NOC (si tu negocio lo permite).
+ * Elimina un NOC (si tu negocio lo permite). Mantengo una validación básica:
+ * - solo admin/editor
+ * - debe pertenecer a un contrato permitido para el usuario
  */
 export async function DELETE(_req: Request, ctx: any) {
   const session = await getServerSession(authOptions);
@@ -207,7 +182,7 @@ export async function DELETE(_req: Request, ctx: any) {
   const usuario_id = await resolveUsuarioId(session);
   if (!usuario_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
-  const noc_id = await getRouteId(ctx);
+  const noc_id = (ctx?.params?.id ?? "").toString();
   if (!noc_id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
   const current = await getNocOr404(noc_id);
@@ -216,6 +191,9 @@ export async function DELETE(_req: Request, ctx: any) {
   const ok = await assertContractAccess(usuario_id, current.contrato_id);
   if (!ok) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
+  // Si tienes FK/constraints, puede fallar si hay líneas; en ese caso, el error quedará como 500.
+  // Si prefieres, podemos validar primero y devolver 400 con un mensaje más claro.
   await pool.query("DELETE FROM public.noc WHERE noc_id = $1", [noc_id]);
+
   return NextResponse.json({ ok: true });
 }

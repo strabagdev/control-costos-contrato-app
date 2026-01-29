@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import {useMemo, useState, useEffect} from "react";
 import { useRouter } from "next/navigation";
 
 type Role = "admin" | "editor" | "viewer";
@@ -127,6 +127,10 @@ export default function NocDetailClient({
   const [lineMsg, setLineMsg] = useState<string | null>(null);
 
   const [newPartidaId, setNewPartidaId] = useState<string>("");
+
+  const [partidaPreview, setPartidaPreview] = useState<any | null>(null);
+  const [partidaPreviewLoading, setPartidaPreviewLoading] = useState(false);
+  const [partidaPreviewError, setPartidaPreviewError] = useState<string | null>(null);
   const [newCantidad, setNewCantidad] = useState<string>("");
   const [newPU, setNewPU] = useState<string>("");
   const [newObs, setNewObs] = useState<string>("");
@@ -140,6 +144,44 @@ export default function NocDetailClient({
     for (const p of partidas) m.set(p.partida_id, p);
     return m;
   }, [partidas]);
+
+
+  useEffect(() => {
+    const id = newPartidaId;
+    if (!id) {
+      setPartidaPreview(null);
+      setPartidaPreviewError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      setPartidaPreviewLoading(true);
+      setPartidaPreviewError(null);
+      try {
+        const res = await fetch(`/api/partidas/${id}`, { method: "GET" });
+        const text = await res.text();
+        const data = text ? JSON.parse(text) : null;
+
+        if (!res.ok) throw new Error(data?.error || `Error ${res.status}`);
+
+        if (!cancelled) setPartidaPreview(data?.partida ?? null);
+      } catch (e: any) {
+        if (!cancelled) {
+          setPartidaPreview(null);
+          setPartidaPreviewError(e?.message || "No se pudo cargar la partida");
+        }
+      } finally {
+        if (!cancelled) setPartidaPreviewLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [newPartidaId]);
+
 
   const hasAppliedLines = useMemo(() => rows.some((r) => !!r.partida_resultante_id), [rows]);
   const canApply = canWrite && rows.length > 0 && !hasAppliedLines && !applying;
@@ -466,7 +508,7 @@ export default function NocDetailClient({
                 <input
                   value={newCantidad}
                   onChange={(e) => setNewCantidad(e.target.value)}
-                  placeholder="(vacío = actual)"
+                  placeholder={partidaPreview?.cantidad != null ? String(partidaPreview.cantidad) : ""}
                   style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
                 />
               </label>
@@ -476,7 +518,7 @@ export default function NocDetailClient({
                 <input
                   value={newPU}
                   onChange={(e) => setNewPU(e.target.value)}
-                  placeholder="(vacío = actual)"
+                  placeholder={partidaPreview?.precio_unitario != null ? String(partidaPreview.precio_unitario) : ""}
                   style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
                 />
               </label>

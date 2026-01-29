@@ -102,7 +102,7 @@ export default async function AdminNocDetailPage({
   if (!noc_id) redirect("/admin/nocs");
 
   const nocRes = await pool.query(
-    `SELECT noc_id, contrato_id, numero, motivo, fecha, created_at
+    `SELECT noc_id, contrato_id, numero, motivo, fecha, status, is_dirty, applied_at, applied_by, created_at
      FROM public.noc
      WHERE noc_id = $1`,
     [noc_id]
@@ -174,6 +174,8 @@ export default async function AdminNocDetailPage({
           numero: noc.numero,
           motivo: noc.motivo ?? "",
           fecha: fmtDate(noc.fecha),
+          status: (noc.status ?? "draft"),
+          is_dirty: Boolean(noc.is_dirty),
         }}
         lines={linesRes.rows}
         partidas={partidasRes.rows}

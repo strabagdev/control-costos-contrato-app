@@ -1,117 +1,203 @@
 import { NextResponse } from "next/server";
+import { pool } from "@/lib/db";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { pool } from "@/lib/db";
 
-function isAdmin(session: any) {
-  return (session?.user as any)?.role === "admin";
+type ColInfo = { column_name: string };
+
+async function getRouteId(ctx: any): Promise<string> {
+  const rawParams = ctx?.params;
+  const params = rawParams && typeof rawParams.then === "function" ? await rawParams : rawParams;
+
+  const direct = params?.id ?? params?.partida_id ?? params?.partidaId ?? params?.partida;
+  if (direct) return String(direct);
+
+  if (params && typeof params === "object") {
+    const keys = Object.keys(params);
+    if (keys.length === 1) return String((params as any)[keys[0]]);
+  }
+  return "";
 }
 
-function toNumberOrNull(v: any) {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+async function getUsuarioColumnMap() {
+  const { rows } = await pool.query<ColInfo>(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'usuario'`
+  );
+  const cols = new Set(rows.map((r) => r.column_name));
+  const idCol = cols.has("usuario_id") ? "usuario_id" : cols.has("id") ? "id" : null;
+  const emailCol = cols.has("email") ? "email" : null;
+  if (!idCol || !emailCol) throw new Error("public.usuario: columnas requeridas no encontradas");
+  return { idCol, emailCol };
 }
 
-export async function PUT(req: Request, { params }: { params: { id?: string } }) {
+async function resolveUsuarioId(session: any): Promise<string | null> {
+  const direct =
+    (session?.user as any)?.id ||
+    (session?.user as any)?.usuario_id ||
+    (session as any)?.user_id;
+  if (direct && typeof direct === "string") return direct;
+
+  const email = session?.user?.email;
+  if (!email) return null;
+
+  const map = await getUsuarioColumnMap();
+  const { rows } = await pool.query(
+    `SELECT ${map.idCol} AS usuario_id
+     FROM public.usuario
+     WHERE ${map.emailCol} = $1
+     LIMIT 1`,
+    [email]
+  );
+  return rows[0]?.usuario_id ?? null;
+}
+
+function roleOf(session: any) {
+  return (session?.user as any)?.role as string | undefined;
+}
+function canWrite(session: any) {
+  const r = roleOf(session);
+  return r === "admin" || r === "editor";
+}
+
+async function assertContractAccess(usuario_id: string, contrato_id: string) {
+  const allow = await pool.query(
+    `SELECT 1
+     FROM public.user_contract
+     WHERE usuario_id = $1 AND contrato_id = $2
+     LIMIT 1`,
+    [usuario_id, contrato_id]
+  );
+  return allow.rowCount > 0;
+}
+
+function isUuid(v: any) {
+  return typeof v === "string" && /^[0-9a-fA-F-]{36}$/.test(v);
+}
+
+export async function GET(_req: Request, ctx: any) {
   const session = await getServerSession(authOptions);
-  if (!isAdmin(session)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!session?.user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const body = await req.json().catch(() => null);
-
-  // Be robust: accept ID either from route param or body
-  const partida_id = ((params?.id ?? body?.partida_id ?? body?.id ?? "") as any).toString().trim();
+  const partida_id = await getRouteId(ctx);
   if (!partida_id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
-  const item = body?.item !== undefined ? (body.item ?? "").toString().trim() : undefined;
-  const descripcion =
-    body?.descripcion !== undefined ? (body.descripcion ?? "").toString().trim() : undefined;
+  const { rows } = await pool.query(
+    `SELECT partida_id, contrato_id, item, descripcion, familia_id, subfamilia_id, grupo_id, unidad_id,
+            cantidad, precio_unitario, total, vigente, noc_id, version_prev_id, version_root_id
+     FROM public.partida
+     WHERE partida_id = $1`,
+    [partida_id]
+  );
 
-  const familia_id = body?.familia_id !== undefined ? body.familia_id : undefined;
-  const subfamilia_id = body?.subfamilia_id !== undefined ? body.subfamilia_id : undefined;
-  const grupo_id = body?.grupo_id !== undefined ? body.grupo_id : undefined;
-  const unidad_id = body?.unidad_id !== undefined ? body.unidad_id : undefined;
+  if (!rows[0]) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const cantidad = body?.cantidad !== undefined ? toNumberOrNull(body.cantidad) : undefined;
-  const precio_unitario =
-    body?.precio_unitario !== undefined ? toNumberOrNull(body.precio_unitario) : undefined;
-
-  const vigente = body?.vigente !== undefined ? Boolean(body.vigente) : undefined;
-
-  if (item !== undefined && !item) {
-    return NextResponse.json({ error: "item cannot be empty" }, { status: 400 });
-  }
-  if (cantidad !== undefined && (cantidad === null || cantidad < 0)) {
-    return NextResponse.json({ error: "cantidad must be a number >= 0" }, { status: 400 });
-  }
-  if (precio_unitario !== undefined && (precio_unitario === null || precio_unitario < 0)) {
-    return NextResponse.json({ error: "precio_unitario must be a number >= 0" }, { status: 400 });
+  const usuario_id = await resolveUsuarioId(session);
+  if (usuario_id) {
+    const ok = await assertContractAccess(usuario_id, rows[0].contrato_id);
+    if (!ok) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const sets: string[] = [];
-  const values: any[] = [];
-  let i = 1;
+  return NextResponse.json({ partida: rows[0] });
+}
 
-  function addSet(col: string, val: any) {
-    sets.push(`${col} = $${i}`);
-    values.push(val);
-    i += 1;
+export async function PUT(req: Request, ctx: any) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!canWrite(session)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+
+  const usuario_id = await resolveUsuarioId(session);
+  if (!usuario_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+
+  const partida_id = await getRouteId(ctx);
+  if (!partida_id) return NextResponse.json({ error: "id required" }, { status: 400 });
+
+  const body = await req.json().catch(() => ({}));
+
+  // Traer estado actual + contrato para validar acceso
+  const currentRes = await pool.query(
+    `SELECT contrato_id, noc_id, version_prev_id, vigente
+     FROM public.partida
+     WHERE partida_id = $1`,
+    [partida_id]
+  );
+  const current = currentRes.rows[0];
+  if (!current) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  const ok = await assertContractAccess(usuario_id, current.contrato_id);
+  if (!ok) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+
+  const touchedByNoc = Boolean(current.noc_id) || Boolean(current.version_prev_id);
+
+  // ✅ Política:
+  // - Si la partida NO tiene NOC (noc_id null) y NO es una versión derivada (version_prev_id null) -> edición completa
+  // - Si fue tocada por NOC o es versión derivada -> edición limitada (para no romper trazabilidad)
+  const allowedFull = !touchedByNoc;
+
+  // Campos posibles
+  const next: any = {};
+
+  // Siempre editable (inicial y también cuando tocada por NOC, si quieres)
+  if (typeof body?.descripcion === "string") next.descripcion = body.descripcion;
+
+  if (typeof body?.cantidad === "number") next.cantidad = body.cantidad;
+  if (typeof body?.precio_unitario === "number") next.precio_unitario = body.precio_unitario;
+
+  // Solo editable si no ha sido tocada por NOC (carga inicial / correcciones estructurales)
+  const lockedAttempt: string[] = [];
+  if (allowedFull) {
+    if (typeof body?.item === "string") next.item = body.item;
+
+    // FKs: aceptamos UUID o null explícito
+    if (body?.familia_id === null || isUuid(body?.familia_id)) next.familia_id = body.familia_id;
+    if (body?.subfamilia_id === null || isUuid(body?.subfamilia_id)) next.subfamilia_id = body.subfamilia_id;
+    if (body?.grupo_id === null || isUuid(body?.grupo_id)) next.grupo_id = body.grupo_id;
+    if (body?.unidad_id === null || isUuid(body?.unidad_id)) next.unidad_id = body.unidad_id;
+
+    if (typeof body?.vigente === "boolean") next.vigente = body.vigente;
+  } else {
+    // Detectar intento de tocar campos bloqueados
+    for (const k of ["item","familia_id","subfamilia_id","grupo_id","unidad_id","vigente"]) {
+      if (k in (body || {})) lockedAttempt.push(k);
+    }
   }
 
-  if (item !== undefined) addSet("item", item);
-  if (descripcion !== undefined) addSet("descripcion", descripcion || null);
-  if (familia_id !== undefined) addSet("familia_id", familia_id);
-  if (subfamilia_id !== undefined) addSet("subfamilia_id", subfamilia_id);
-  if (grupo_id !== undefined) addSet("grupo_id", grupo_id);
-  if (unidad_id !== undefined) addSet("unidad_id", unidad_id);
-  if (cantidad !== undefined) addSet("cantidad", cantidad);
-  if (precio_unitario !== undefined) addSet("precio_unitario", precio_unitario);
-  if (vigente !== undefined) addSet("vigente", vigente);
+  if (lockedAttempt.length) {
+    return NextResponse.json(
+      {
+        error: "partida locked (touched by NOC)",
+        detail: "Esta partida ya fue derivada por una NOC (o es una versión). Solo se permite editar descripción/cantidad/PU.",
+        fields_blocked: lockedAttempt,
+      },
+      { status: 400 }
+    );
+  }
 
-  if (sets.length === 0) {
+  if (Object.keys(next).length === 0) {
     return NextResponse.json({ error: "no fields to update" }, { status: 400 });
   }
 
-  values.push(partida_id);
-
-  try {
-    const { rows } = await pool.query(
-      `UPDATE partida
-       SET ${sets.join(", ")}
-       WHERE partida_id = $${i}
-       RETURNING
-         partida_id,
-         partida_id AS id,
-         contrato_id,
-         item,
-         descripcion,
-         familia_id,
-         subfamilia_id,
-         grupo_id,
-         unidad_id,
-         cantidad,
-         precio_unitario,
-         vigente,
-         created_at`,
-      values
-    );
-
-    if (!rows?.length) {
-      return NextResponse.json({ error: "not found" }, { status: 404 });
-    }
-
-    return NextResponse.json({ partida: rows[0] });
-  } catch (e: any) {
-    const code = (e?.code ?? "").toString();
-    const msg = (e?.message ?? "").toString();
-
-    if (code === "23505" || msg.toLowerCase().includes("duplicate")) {
-      return NextResponse.json({ error: "duplicate item for contrato" }, { status: 409 });
-    }
-    if (code === "23503") {
-      return NextResponse.json({ error: "invalid foreign key" }, { status: 400 });
-    }
-
-    return NextResponse.json({ error: "db error" }, { status: 500 });
+  // Construir UPDATE dinámico
+  const sets: string[] = [];
+  const values: any[] = [partida_id];
+  let idx = 2;
+  for (const [k, v] of Object.entries(next)) {
+    sets.push(`${k} = $${idx}`);
+    values.push(v);
+    idx++;
   }
+
+  // ⛔ NO tocar 'total' (columna generada)
+  const q = `
+    UPDATE public.partida
+    SET ${sets.join(", ")}
+    WHERE partida_id = $1
+    RETURNING partida_id, contrato_id, item, descripcion, familia_id, subfamilia_id, grupo_id, unidad_id,
+              cantidad, precio_unitario, total, vigente, noc_id, version_prev_id, version_root_id
+  `;
+
+  const { rows } = await pool.query(q, values);
+  return NextResponse.json({ partida: rows[0] });
 }

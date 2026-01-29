@@ -5,6 +5,20 @@ import { authOptions } from "@/lib/auth";
 
 type ColInfo = { column_name: string };
 
+async function getRouteId(ctx: any): Promise<string> {
+  const rawParams = ctx?.params;
+  const params = rawParams && typeof rawParams.then === "function" ? await rawParams : rawParams;
+
+  const direct = params?.id ?? params?.noc_id ?? params?.nocId ?? params?.nocID ?? params?.noc;
+  if (direct) return String(direct);
+
+  if (params && typeof params === "object") {
+    const keys = Object.keys(params);
+    if (keys.length === 1) return String((params as any)[keys[0]]);
+  }
+  return "";
+}
+
 async function getUsuarioColumnMap() {
   const { rows } = await pool.query<ColInfo>(
     `SELECT column_name
@@ -60,13 +74,6 @@ async function assertContractAccess(usuario_id: string, contrato_id: string) {
   return allow.rowCount > 0;
 }
 
-function toNum(v: any) {
-  if (v == null || v === "") return null;
-  const n = typeof v === "number" ? v : parseFloat(String(v));
-  return Number.isFinite(n) ? n : null;
-}
-
-// POST /api/nocs/[id]/apply
 export async function POST(_req: Request, ctx: any) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -75,142 +82,135 @@ export async function POST(_req: Request, ctx: any) {
   const usuario_id = await resolveUsuarioId(session);
   if (!usuario_id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
-  const noc_id = (ctx?.params?.id ?? "").toString();
+  const noc_id = await getRouteId(ctx);
   if (!noc_id) return NextResponse.json({ error: "id required" }, { status: 400 });
+
+  const nocRes = await pool.query(
+    `SELECT noc_id, contrato_id, status
+     FROM public.noc
+     WHERE noc_id = $1`,
+    [noc_id]
+  );
+  const noc = nocRes.rows[0];
+  if (!noc) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  const ok = await assertContractAccess(usuario_id, noc.contrato_id);
+  if (!ok) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+
+  const linesRes = await pool.query(
+    `SELECT noc_linea_id, partida_origen_id, nueva_cantidad, nuevo_precio_unitario, partida_resultante_id
+     FROM public.noc_linea
+     WHERE noc_id = $1
+     ORDER BY created_at ASC`,
+    [noc_id]
+  );
+  const lines = linesRes.rows;
+  if (!lines.length) return NextResponse.json({ error: "no lines" }, { status: 400 });
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // Lock NOC
-    const nocRes = await client.query(
-      "SELECT noc_id, contrato_id FROM public.noc WHERE noc_id = $1 FOR UPDATE",
-      [noc_id]
-    );
-    const noc = nocRes.rows[0];
-    if (!noc) {
-      await client.query("ROLLBACK");
-      return NextResponse.json({ error: "not found" }, { status: 404 });
-    }
+    for (const ln of lines) {
+      // ✅ Re-apply support:
+      // If this NOC was already applied before, we treat the *current vigente version*
+      // as the last result (partida_resultante_id). Otherwise, use partida_origen_id.
+      const effectiveOriginId =
+        ln.partida_resultante_id && noc.status === "applied"
+          ? ln.partida_resultante_id
+          : ln.partida_origen_id;
 
-    const ok = await assertContractAccess(usuario_id, noc.contrato_id);
-    if (!ok) {
-      await client.query("ROLLBACK");
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
-
-    // Lock lines
-    const linesRes = await client.query(
-      `SELECT noc_linea_id, partida_origen_id, partida_resultante_id, nueva_cantidad, nuevo_precio_unitario
-       FROM public.noc_linea
-       WHERE noc_id = $1
-       ORDER BY created_at ASC
-       FOR UPDATE`,
-      [noc_id]
-    );
-
-    if (linesRes.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return NextResponse.json({ error: "noc has no lines" }, { status: 400 });
-    }
-
-    // Prevent re-apply if any resultante already set
-    const already = linesRes.rows.find((l: any) => !!l.partida_resultante_id);
-    if (already) {
-      await client.query("ROLLBACK");
-      return NextResponse.json({ error: "noc already applied (has resultante)" }, { status: 400 });
-    }
-
-    let applied = 0;
-    const resultantes: { noc_linea_id: string; partida_resultante_id: string }[] = [];
-
-    for (const line of linesRes.rows) {
-      const noc_linea_id = line.noc_linea_id as string;
-      const partida_origen_id = line.partida_origen_id as string | null;
-      if (!partida_origen_id) {
-        await client.query("ROLLBACK");
-        return NextResponse.json({ error: `line ${noc_linea_id}: partida_origen_id missing` }, { status: 400 });
-      }
-
-      // Lock partida origen
-      const pRes = await client.query(
-        `SELECT *
+      const partidaRes = await client.query(
+        `SELECT partida_id, contrato_id, item, descripcion,
+                familia_id, subfamilia_id, grupo_id, unidad_id,
+                cantidad, precio_unitario, vigente,
+                version_prev_id, version_root_id
          FROM public.partida
-         WHERE partida_id = $1
-         FOR UPDATE`,
-        [partida_origen_id]
-      );
-      const p = pRes.rows[0];
-      if (!p) {
-        await client.query("ROLLBACK");
-        return NextResponse.json({ error: `line ${noc_linea_id}: partida not found` }, { status: 404 });
-      }
-      if (p.contrato_id !== noc.contrato_id) {
-        await client.query("ROLLBACK");
-        return NextResponse.json({ error: `line ${noc_linea_id}: partida not in contrato` }, { status: 400 });
-      }
-      if (p.vigente !== true) {
-        await client.query("ROLLBACK");
-        return NextResponse.json({ error: `line ${noc_linea_id}: partida not vigente` }, { status: 400 });
-      }
-
-      const nuevaCantidad = toNum(line.nueva_cantidad);
-      const nuevoPU = toNum(line.nuevo_precio_unitario);
-
-      // Final values default to current
-      const cantidad_final = nuevaCantidad != null ? nuevaCantidad : toNum(p.cantidad) ?? 0;
-      const precio_unitario_final = nuevoPU != null ? nuevoPU : toNum(p.precio_unitario) ?? 0;
-
-      // 1) Set origen not vigente
-      await client.query(
-        "UPDATE public.partida SET vigente = false WHERE partida_id = $1",
-        [partida_origen_id]
+         WHERE partida_id = $1`,
+        [effectiveOriginId]
       );
 
-      // 2) Insert resultante vigente (total is generated)
-      const ins = await client.query(
+      const partida = partidaRes.rows[0];
+      if (!partida) throw new Error(`partida not found: ${effectiveOriginId}`);
+      if (partida.contrato_id !== noc.contrato_id) throw new Error(`partida not in contrato: ${effectiveOriginId}`);
+      if (partida.vigente !== true) throw new Error(`partida not vigente: ${effectiveOriginId}`);
+
+      const cantidadNueva = ln.nueva_cantidad ?? partida.cantidad;
+      const puNuevo = ln.nuevo_precio_unitario ?? partida.precio_unitario;
+      const totalNuevo = Number(cantidadNueva) * Number(puNuevo);
+
+      const rootId = partida.version_root_id ?? partida.partida_id;
+
+      const insertRes = await client.query(
         `INSERT INTO public.partida
-         (contrato_id, item, descripcion, familia_id, subfamilia_id, grupo_id,
-          cantidad, unidad_id, precio_unitario, vigente,
-          origen_tipo, origen_id, noc_id, estado_operativo)
+          (contrato_id, item, descripcion, familia_id, subfamilia_id, grupo_id, unidad_id,
+           cantidad, precio_unitario, total, vigente, noc_id, version_prev_id, version_root_id)
          VALUES
-         ($1,$2,$3,$4,$5,$6,
-          $7,$8,$9,true,
-          'noc',$10,$10,$11)
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11,$12,$13)
          RETURNING partida_id`,
         [
-          p.contrato_id,
-          p.item,
-          p.descripcion,
-          p.familia_id,
-          p.subfamilia_id,
-          p.grupo_id,
-          cantidad_final,
-          p.unidad_id,
-          precio_unitario_final,
-          noc_id, // origen_id and noc_id
-          p.estado_operativo,
+          partida.contrato_id,
+          partida.item,
+          partida.descripcion,
+          partida.familia_id,
+          partida.subfamilia_id,
+          partida.grupo_id,
+          partida.unidad_id,
+          cantidadNueva,
+          puNuevo,
+          totalNuevo,
+          noc_id,
+          partida.partida_id, // prev
+          rootId,             // root
         ]
       );
+      const newId = insertRes.rows[0].partida_id;
 
-      const partida_resultante_id = ins.rows[0].partida_id as string;
+      // Archive the previous vigente version
+      await client.query(`UPDATE public.partida SET vigente = false WHERE partida_id = $1`, [
+        partida.partida_id,
+      ]);
 
-      // 3) Link line -> resultante
+      // Update line pointer to latest result (keeps history via partida version chain)
       await client.query(
-        "UPDATE public.noc_linea SET partida_resultante_id = $2 WHERE noc_linea_id = $1",
-        [noc_linea_id, partida_resultante_id]
+        `UPDATE public.noc_linea
+         SET partida_resultante_id = $2
+         WHERE noc_linea_id = $1`,
+        [ln.noc_linea_id, newId]
       );
-
-      applied += 1;
-      resultantes.push({ noc_linea_id, partida_resultante_id });
     }
 
+    await client.query(
+      `UPDATE public.noc
+       SET status = 'applied',
+           is_dirty = false,
+           applied_at = NOW(),
+           applied_by = $2
+       WHERE noc_id = $1`,
+      [noc_id, usuario_id]
+    );
+
     await client.query("COMMIT");
-    return NextResponse.json({ ok: true, applied, resultantes });
   } catch (e: any) {
-    try { await client.query("ROLLBACK"); } catch {}
-    return NextResponse.json({ error: e?.message || "apply failed" }, { status: 500 });
+    await client.query("ROLLBACK");
+    const msg = e?.message || "apply failed";
+
+    if (String(msg).includes("not vigente")) {
+      return NextResponse.json(
+        {
+          error: "cannot apply: some partidas are not vigente",
+          detail: msg,
+          hint:
+            "Esta NOC ya fue superada por otra NOC aplicada sobre alguna partida. No se puede re-aplicar.",
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json({ error: "apply failed", detail: msg }, { status: 400 });
   } finally {
     client.release();
   }
+
+  return NextResponse.json({ ok: true });
 }

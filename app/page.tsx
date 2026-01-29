@@ -146,7 +146,6 @@ export default async function HomePage({
           email: session?.user?.email,
           name: session?.user?.name,
           role,
-          contrato: selectedContratoName || null,
         }}
       />
       <div
@@ -175,7 +174,7 @@ export default async function HomePage({
             </p>
           )}
         </div>
-
+        
       </div>
 
       {contratos.length === 0 ? (
@@ -200,8 +199,7 @@ export default async function HomePage({
           Contrato: <b>{selectedContratoName}</b>
         </div>
       )}
-
-      <div
+<div
         style={{
           marginTop: 16,
           display: "grid",

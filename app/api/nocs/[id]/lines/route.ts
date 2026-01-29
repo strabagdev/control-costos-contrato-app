@@ -93,6 +93,17 @@ async function getNocOr404(noc_id: string) {
   return res.rows[0] ?? null;
 }
 
+async function markNocDirtyIfApplied(noc_id: string) {
+  // Si la NOC ya estaba aplicada, cualquier cambio en líneas deja cambios pendientes
+  await pool.query(
+    `UPDATE public.noc
+     SET is_dirty = CASE WHEN status = 'applied' THEN true ELSE is_dirty END
+     WHERE noc_id = $1`,
+    [noc_id]
+  );
+}
+
+
 /**
  * Helpers
  */
@@ -233,6 +244,8 @@ export async function POST(req: Request, ctx: any) {
     [noc_id, partida_origen_id, nueva_cantidad, nuevo_precio_unitario, observacion]
   );
 
+  await markNocDirtyIfApplied(noc_id);
+
   return NextResponse.json({ line: rows[0] }, { status: 201 });
 }
 
@@ -305,6 +318,8 @@ export async function PUT(req: Request, ctx: any) {
     [noc_linea_id, noc_id, partida_origen_id, nueva_cantidad, nuevo_precio_unitario, observacion]
   );
 
+  await markNocDirtyIfApplied(noc_id);
+
   return NextResponse.json({ line: rows[0] });
 }
 
@@ -342,5 +357,6 @@ export async function DELETE(req: Request, ctx: any) {
     return NextResponse.json({ error: "cannot delete applied line" }, { status: 400 });
 
   await pool.query("DELETE FROM public.noc_linea WHERE noc_linea_id = $1", [noc_linea_id]);
+  await markNocDirtyIfApplied(noc_id);
   return NextResponse.json({ ok: true });
 }

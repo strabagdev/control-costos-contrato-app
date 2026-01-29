@@ -2,12 +2,19 @@
 
 import { useState } from "react";
 import { signIn } from "next-auth/react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>("");
+
+  // Si venías desde una ruta protegida, vuelve ahí
+  const callbackUrl = searchParams.get("callbackUrl") || "/";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -15,15 +22,22 @@ export default function LoginPage() {
     setSubmitting(true);
 
     try {
+      // Usamos redirect:false para controlar el flujo y mostrar errores
       const res = await signIn("credentials", {
         email,
         password,
-        redirect: true,
-        callbackUrl: "/",
+        redirect: false,
+        callbackUrl,
       });
 
-      // redirect:true usually navigates; but if not:
-      if (res?.error) setError("Credenciales inválidas.");
+      if (res?.error) {
+        setError("Credenciales inválidas.");
+        return;
+      }
+
+      // Si ok, navegamos nosotros
+      router.push(res?.url || callbackUrl);
+      router.refresh();
     } catch {
       setError("No se pudo iniciar sesión.");
     } finally {
@@ -170,7 +184,7 @@ export default function LoginPage() {
             Si no tienes acceso a un contrato, el dashboard te avisará.
           </p>
           <p style={{ marginTop: 14, fontSize: 12, opacity: 0.75, color: "white" }}>
-             Usuario demo: admin@local.test / Admin123!
+            Usuario demo: admin@local.test / Admin123!
           </p>
         </form>
       </div>
