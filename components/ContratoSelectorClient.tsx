@@ -1,9 +1,12 @@
 "use client";
 
-import { useMemo } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import * as React from "react";
+import { useRouter } from "next/navigation";
 
-type Contrato = { contrato_id: string; nombre: string };
+type Contrato = {
+  contrato_id: string;
+  nombre?: string | null;
+};
 
 export default function ContratoSelectorClient({
   contratos,
@@ -13,57 +16,49 @@ export default function ContratoSelectorClient({
   selectedContratoId: string;
 }) {
   const router = useRouter();
-  const params = useSearchParams();
+  const [value, setValue] = React.useState(selectedContratoId || "");
 
-  const value = useMemo(() => {
-    return selectedContratoId || contratos[0]?.contrato_id || "";
-  }, [selectedContratoId, contratos]);
+  // Si el server cambia el seleccionado (por querystring), sincronizamos.
+  React.useEffect(() => {
+    setValue(selectedContratoId || "");
+  }, [selectedContratoId]);
 
-  function setContrato(id: string) {
-    const next = new URLSearchParams(params.toString());
-    next.set("contrato", id);
-    router.push(`/?${next.toString()}`);
+  function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const next = e.target.value;
+    setValue(next);
+
+    try {
+      window.localStorage.setItem("cc_last_contrato", next);
+    } catch {}
+
+    // MVP: usamos querystring para que el server cargue el contrato correcto
+    router.replace(next ? `/?contrato=${encodeURIComponent(next)}` : "/");
+    router.refresh();
   }
 
   return (
-    <div
-      style={{
-        marginTop: 14,
-        padding: 12,
-        border: "1px solid #ddd",
-        borderRadius: 10,
-        display: "flex",
-        gap: 10,
-        alignItems: "center",
-        flexWrap: "wrap",
-      }}
-    >
-      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>
-        Contrato
-      </div>
-
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 12, opacity: 0.75 }}>Contrato</span>
       <select
         value={value}
-        onChange={(e) => setContrato(e.target.value)}
+        onChange={onChange}
         style={{
-          padding: "9px 10px",
+          padding: "8px 10px",
           borderRadius: 10,
-          border: "1px solid #ddd",
+          border: "1px solid #e5e7eb",
           background: "white",
-          fontSize: 13,
-          minWidth: 320,
+          minWidth: 260,
         }}
       >
+        <option value="" disabled>
+          Selecciona un contrato...
+        </option>
         {contratos.map((c) => (
           <option key={c.contrato_id} value={c.contrato_id}>
-            {c.nombre}
+            {c.nombre ? `${c.nombre} (${c.contrato_id.slice(0, 8)}…)` : c.contrato_id}
           </option>
         ))}
       </select>
-
-      <div style={{ fontSize: 12, opacity: 0.65 }}>
-        (cambia la data del dashboard)
-      </div>
     </div>
   );
 }

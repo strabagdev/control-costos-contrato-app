@@ -2,8 +2,6 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import Link from "next/link";
 import { pool } from "@/lib/db";
-import ContratoSelectorClient from "@/components/ContratoSelectorClient";
-import SessionLogger from "@/components/layout/SessionLogger";
 
 type SearchParams = { [key: string]: string | string[] | undefined };
 type ColInfo = { column_name: string };
@@ -101,6 +99,10 @@ export default async function HomePage({
   const selectedContratoId =
     contratos.find((c) => c.contrato_id === requestedContrato)?.contrato_id ?? defaultContrato;
 
+  const contratoActivo =
+    contratos.find((c) => c.contrato_id === selectedContratoId) ?? null;
+
+
   // Load KPIs for selected contract (if any)
   let kpis = {
     total_base: 0,
@@ -141,13 +143,6 @@ export default async function HomePage({
 
   return (
     <div style={{ maxWidth: 900, margin: "40px auto", padding: 16 }}>
-      <SessionLogger
-        data={{
-          email: session?.user?.email,
-          name: session?.user?.name,
-          role,
-        }}
-      />
       <div
         style={{
           display: "flex",
@@ -192,11 +187,9 @@ export default async function HomePage({
             Pide al admin que te asigne al menos un contrato para ver el dashboard.
           </div>
         </div>
-      ) : contratos.length > 1 ? (
-        <ContratoSelectorClient contratos={contratos} selectedContratoId={selectedContratoId} />
       ) : (
-        <div style={{ marginTop: 14, opacity: 0.7, fontSize: 12 }}>
-          Contrato: <b>{selectedContratoName}</b>
+        <div style={{ fontSize: 12, opacity: 0.8 }}>
+          Contrato: {contratoActivo?.nombre ?? contratoActivo?.contrato_id ?? "—"}
         </div>
       )}
 <div

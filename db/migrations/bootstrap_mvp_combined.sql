@@ -1,41 +1,12 @@
--- 000_local_reset_mvp.sql
--- RESET + INIT completo para entorno LOCAL (MVP)
--- Incluye:
--- - DROP de tablas principales (CASCADE)
--- - Extensiones necesarias (pgcrypto)
--- - Schema base (contrato, partidas, nocs, etc.)
--- - Auth local (usuario + roles + trigger updated_at)
--- - Relación user_contract
--- - Campos NOC status + versionado de partida
--- - Seed: contrato demo + familias/subfamilias/grupos/unidades + 2 partidas + 1 NOC + 1 línea
--- - Seed: usuario admin@local.test / Admin123!
---
--- Ejecutar con:
---   psql -U postgres -d <TU_DB> -v ON_ERROR_STOP=1 -f db/migrations/000_local_reset_mvp.sql
+-- bootstrap_mvp.sql
+-- Generated 2026-01-29T21:41:28.583134
+-- Combines core migrations for MVP (init + auth + user_contract + hardening + views)
+-- Run on an empty database (or after reset_to_zero.sql)
+SET client_min_messages TO WARNING;
 
 BEGIN;
 
--- 0) Extensiones
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
--- 1) Drop (orden seguro)
-DROP TABLE IF EXISTS public.noc_linea CASCADE;
-DROP TABLE IF EXISTS public.partida CASCADE;
-DROP TABLE IF EXISTS public.noc CASCADE;
-
-DROP TABLE IF EXISTS public.user_contract CASCADE;
-DROP TABLE IF EXISTS public.usuario CASCADE;
-
-DROP TABLE IF EXISTS public.grupo CASCADE;
-DROP TABLE IF EXISTS public.subfamilia CASCADE;
-DROP TABLE IF EXISTS public.familia CASCADE;
-DROP TABLE IF EXISTS public.unidad CASCADE;
-
-DROP TABLE IF EXISTS public.contrato CASCADE;
-
-COMMIT;
-
--- 2) Re-crear schema base
+-- >>> 001_init.sql
 -- 001_init.sql - Control de Costos Contrato (schema pulido)
 -- PostgreSQL (local / Supabase compatible)
 -- Convenciones:
@@ -175,8 +146,7 @@ CREATE TABLE IF NOT EXISTS noc_linea (
 );
 
 CREATE INDEX IF NOT EXISTS idx_noc_linea_noc ON noc_linea(noc_id);
-
-
+-- >>> 004_auth.sql
 -- 004_auth.sql - Autenticación y roles (local, compatible con Supabase Postgres)
 -- Tabla: usuario
 -- Roles: admin | editor | viewer
@@ -210,10 +180,7 @@ CREATE TRIGGER trg_usuario_updated_at
 BEFORE UPDATE ON usuario
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
-
-
-BEGIN;
-
+-- >>> 20260126_create_user_contract.sql
 -- 20260126_create_user_contract.sql
 -- Relación usuario ↔ contrato
 -- Tablas reales:
@@ -225,156 +192,124 @@ CREATE TABLE IF NOT EXISTS user_contract (
   contrato_id UUID NOT NULL REFERENCES public.contrato(contrato_id) ON DELETE CASCADE,
   PRIMARY KEY (usuario_id, contrato_id)
 );
+-- >>> 010_hardening_partida_unique_and_uuid.sql
+-- 010_hardening_partida_unique_and_uuid.sql
+-- Objetivo:
+-- 1) Asegurar gen_random_uuid() (pgcrypto)
+-- 2) Permitir versionado de partidas (múltiples versiones por item) manteniendo unicidad SOLO en vigentes
+--    (RN-11/RN-12)
+-- 3) Evitar errores de "relation ... does not exist" por search_path: usar schema public explícito en lo nuevo
+--
+-- Ejecutar con:
+--   psql -U postgres -d <TU_DB> -v ON_ERROR_STOP=1 -f db/migrations/010_hardening_partida_unique_and_uuid.sql
 
-COMMIT;
 
--- Migration: NOC state + Partida version chain
--- Adds minimal fields to support:
--- - NOC status/is_dirty/applied_at/applied_by
--- - Partida versioning (prev/root) to list chains and support re-apply safely
+-- 1) UUID default helper
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- 1) NOC fields
-ALTER TABLE public.noc
-  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft',
-  ADD COLUMN IF NOT EXISTS is_dirty BOOLEAN NOT NULL DEFAULT false,
-  ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ NULL,
-  ADD COLUMN IF NOT EXISTS applied_by TEXT NULL;
+-- 2) Reemplazar UNIQUE (contrato_id, item) por UNIQUE PARCIAL solo para vigentes
+--    Esto habilita RN-04 (nueva instancia) sin perder RN-12 (una vigente por item).
+DO $$
+BEGIN
+  -- Drop constraint if exists (nombre exacto según tu init)
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'uq_partida_item_por_contrato'
+      AND conrelid = 'public.partida'::regclass
+  ) THEN
+    EXECUTE 'ALTER TABLE public.partida DROP CONSTRAINT uq_partida_item_por_contrato';
+  END IF;
+EXCEPTION WHEN undefined_table THEN
+  -- Si la tabla aún no existe en esta DB, no fallar
+  RAISE NOTICE 'public.partida no existe todavía; omitiendo hardening de constraint.';
+END $$;
 
-CREATE INDEX IF NOT EXISTS idx_noc_contrato_status ON public.noc (contrato_id, status);
+-- Crear índice único parcial (si la tabla existe)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema='public' AND table_name='partida'
+  ) THEN
+    EXECUTE '
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_partida_item_vigente_por_contrato
+      ON public.partida (contrato_id, item)
+      WHERE vigente = true
+    ';
+  END IF;
+END $$;
 
--- 2) Partida version fields
-ALTER TABLE public.partida
-  ADD COLUMN IF NOT EXISTS version_prev_id UUID NULL,
-  ADD COLUMN IF NOT EXISTS version_root_id UUID NULL;
+-- 3) Índices de apoyo (opcionales pero recomendados)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='noc_linea') THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS ix_noc_linea_noc_id ON public.noc_linea (noc_id)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS ix_noc_linea_partida_origen_id ON public.noc_linea (partida_origen_id)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS ix_noc_linea_partida_resultante_id ON public.noc_linea (partida_resultante_id)';
+  END IF;
 
--- Backfill root id for existing rows (best-effort)
-UPDATE public.partida
-SET version_root_id = COALESCE(version_root_id, partida_id)
-WHERE version_root_id IS NULL;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='partida') THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS ix_partida_contrato_id ON public.partida (contrato_id)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS ix_partida_noc_id ON public.partida (noc_id)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS ix_partida_vigente ON public.partida (vigente)';
+  END IF;
+END $$;
+-- >>> 003_views.sql
+-- 003_views.sql - Vistas para lectura (3 decimales)
+-- Se elimina y recrea la vista para evitar conflictos de tipo
 
-CREATE INDEX IF NOT EXISTS idx_partida_version_root ON public.partida (version_root_id);
-CREATE INDEX IF NOT EXISTS idx_partida_version_prev ON public.partida (version_prev_id);
 
--- dev_seed.sql - Datos mínimos de prueba (local)
+DROP VIEW IF EXISTS v_partida_vigente;
 
--- Contrato
-INSERT INTO contrato (contrato_id, nombre, descripcion)
-VALUES ('11111111-1111-1111-1111-111111111111', 'Contrato Demo', 'Contrato de prueba')
-ON CONFLICT DO NOTHING;
-
--- Familias
-INSERT INTO familia (familia_id, item, nombre)
-VALUES 
- ('22222222-2222-2222-2222-222222222221', 'F1', 'Obras Civiles'),
- ('22222222-2222-2222-2222-222222222222', 'F2', 'Montaje')
-ON CONFLICT DO NOTHING;
-
--- Subfamilias
-INSERT INTO subfamilia (subfamilia_id, familia_id, item, nombre)
-VALUES
- ('33333333-3333-3333-3333-333333333331', '22222222-2222-2222-2222-222222222221', 'SF1', 'Hormigón'),
- ('33333333-3333-3333-3333-333333333332', '22222222-2222-2222-2222-222222222222', 'SF2', 'Estructuras')
-ON CONFLICT DO NOTHING;
-
--- Grupos
-INSERT INTO grupo (grupo_id, subfamilia_id, item, nombre)
-VALUES
- ('44444444-4444-4444-4444-444444444441', '33333333-3333-3333-3333-333333333331', 'G1', 'Fundaciones'),
- ('44444444-4444-4444-4444-444444444442', '33333333-3333-3333-3333-333333333332', 'G2', 'Piping')
-ON CONFLICT DO NOTHING;
-
--- Unidades
-INSERT INTO unidad (unidad_id, nombre)
-VALUES
- ('55555555-5555-5555-5555-555555555551', 'm3'),
- ('55555555-5555-5555-5555-555555555552', 'kg')
-ON CONFLICT DO NOTHING;
-
--- Partidas base
-INSERT INTO partida (
-  partida_id, contrato_id, item, descripcion,
-  familia_id, subfamilia_id, grupo_id,
-  cantidad, unidad_id, precio_unitario, vigente
-) VALUES
- (
-  '66666666-6666-6666-6666-666666666661',
-  '11111111-1111-1111-1111-111111111111',
-  '1.01',
-  'Hormigón fundaciones',
-  '22222222-2222-2222-2222-222222222221',
-  '33333333-3333-3333-3333-333333333331',
-  '44444444-4444-4444-4444-444444444441',
-  100,
-  '55555555-5555-5555-5555-555555555551',
-  50,
-  TRUE
- ),
- (
-  '66666666-6666-6666-6666-666666666662',
-  '11111111-1111-1111-1111-111111111111',
-  '2.01',
-  'Montaje piping',
-  '22222222-2222-2222-2222-222222222222',
-  '33333333-3333-3333-3333-333333333332',
-  '44444444-4444-4444-4444-444444444442',
-  200,
-  '55555555-5555-5555-5555-555555555552',
-  10,
-  TRUE
- )
-ON CONFLICT DO NOTHING;
-
--- NOC
-INSERT INTO noc (noc_id, contrato_id, numero, motivo, fecha)
-VALUES (
-  '77777777-7777-7777-7777-777777777777',
-  '11111111-1111-1111-1111-111111111111',
-  'NOC-001',
-  'Aumento de alcance',
-  CURRENT_DATE
+CREATE VIEW v_partida_vigente AS
+WITH ultima_noc_por_partida AS (
+  SELECT DISTINCT ON (nl.partida_origen_id)
+    nl.partida_origen_id,
+    nl.noc_id,
+    nl.nueva_cantidad,
+    nl.nuevo_precio_unitario,
+    nl.created_at
+  FROM noc_linea nl
+  WHERE nl.partida_origen_id IS NOT NULL
+  ORDER BY nl.partida_origen_id, nl.created_at DESC
 )
-ON CONFLICT DO NOTHING;
+SELECT
+  p.partida_id,
+  p.contrato_id,
+  p.item,
+  p.descripcion,
 
--- NOC línea (modifica partida 1)
-INSERT INTO noc_linea (
-  noc_linea_id, noc_id, partida_origen_id, nueva_cantidad, observacion
-)
-VALUES (
-  '88888888-8888-8888-8888-888888888888',
-  '77777777-7777-7777-7777-777777777777',
-  '66666666-6666-6666-6666-666666666661',
-  120,
-  'Incremento de volumen'
-)
-ON CONFLICT DO NOTHING;
+  -- Base
+  round(p.cantidad, 3)        AS cantidad_base,
+  round(p.precio_unitario, 3) AS precio_unitario_base,
+  round(p.total, 3)           AS total_base,
 
+  -- Vigente
+  round(COALESCE(u.nueva_cantidad, p.cantidad), 3) AS cantidad_vigente,
+  round(COALESCE(u.nuevo_precio_unitario, p.precio_unitario), 3) AS precio_unitario_vigente,
+  round(
+    COALESCE(u.nueva_cantidad, p.cantidad)
+    * COALESCE(u.nuevo_precio_unitario, p.precio_unitario),
+    3
+  ) AS total_vigente,
 
--- 004_auth_seed.sql - Seed mínimo de usuarios (SOLO DEV)
--- Credenciales iniciales:
---   email: admin@local.test
---   password: Admin123!
--- Cambia esto después de probar.
+  -- Trazabilidad
+  u.noc_id     AS noc_id_ultima,
+  u.created_at AS noc_linea_fecha_ultima,
 
+  -- Delta
+  round(COALESCE(u.nueva_cantidad, p.cantidad) - p.cantidad, 3) AS delta_cantidad,
+  round(
+    (COALESCE(u.nueva_cantidad, p.cantidad)
+     * COALESCE(u.nuevo_precio_unitario, p.precio_unitario)) - p.total,
+    3
+  ) AS delta_total
 
-INSERT INTO usuario (email, nombre, password_hash, rol, activo)
-VALUES (
-  'admin@local.test',
-  'Admin Local',
-  crypt('Admin123!', gen_salt('bf')),
-  'admin',
-  TRUE
-)
-ON CONFLICT (email) DO NOTHING;
+FROM partida p
+LEFT JOIN ultima_noc_por_partida u
+  ON u.partida_origen_id = p.partida_id;
 
-
--- Asociar admin a todos los contratos existentes (útil para MVP)
-BEGIN;
-
-INSERT INTO public.user_contract (usuario_id, contrato_id)
-SELECT u.usuario_id, c.contrato_id
-FROM public.usuario u
-CROSS JOIN public.contrato c
-WHERE u.email = 'admin@local.test'
-ON CONFLICT DO NOTHING;
 
 COMMIT;
